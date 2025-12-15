@@ -17,19 +17,46 @@ from sentiment import daily_sentiment
 def fetch_stock(ticker: str, start: str, end: str) -> pd.DataFrame:
     """
     Fetch OHLCV from yfinance and return a normalized dataframe with Date, Close.
+    Robust to multi-index columns and empty responses.
     """
     df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+
+    # Handle empty result
     if df is None or df.empty:
         return pd.DataFrame(columns=["Date", "Close"])
 
-    # yfinance returns index as DatetimeIndex
+    # Flatten multi-index columns if present (e.g., ('Close','AAPL')).
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ["_".join([str(c) for c in col if c != ""]) for col in df.columns]
+
     df = df.reset_index()
-    # normalize column names
+
+    # Normalize date column name
     if "Date" not in df.columns:
-        # sometimes it's "Datetime"
         if "Datetime" in df.columns:
             df = df.rename(columns={"Datetime": "Date"})
-    out = df[["Date", "Close"]].copy()
+        else:
+            # Fall back to first column as Date
+            df = df.rename(columns={df.columns[0]: "Date"})
+
+    # Try to locate a close column robustly
+    close_col = None
+    for cand in ["Close", "Adj Close", "Close_"+ticker, "Adj Close_"+ticker]:
+        if cand in df.columns:
+            close_col = cand
+            break
+
+    if close_col is None:
+        # Last resort: pick the first column containing "Close"
+        close_like = [c for c in df.columns if "Close" in str(c)]
+        if close_like:
+            close_col = close_like[0]
+        else:
+            # No close prices found
+            return pd.DataFrame(columns=["Date", "Close"])
+
+    out = df[["Date", close_col]].copy()
+    out = out.rename(columns={close_col: "Close"})
     out["Date"] = pd.to_datetime(out["Date"]).dt.date.astype(str)
     out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
     out = out.dropna(subset=["Close"]).reset_index(drop=True)
