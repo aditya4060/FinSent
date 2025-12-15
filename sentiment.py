@@ -28,11 +28,19 @@ def _to_utc_date_str(x) -> str:
     return pd.to_datetime(x).date().isoformat()
 
 
+# @st.cache_resource(show_spinner="Loading FinBERT model...")
+# def get_finbert_pipeline():
+#     # FinBERT commonly used: ProsusAI/finbert. [web:16][web:34]
+#     return pipeline("sentiment-analysis", model="ProsusAI/finbert", truncation=True)
 @st.cache_resource(show_spinner="Loading FinBERT model...")
 def get_finbert_pipeline():
-    # FinBERT commonly used: ProsusAI/finbert. [web:16][web:34]
-    return pipeline("sentiment-analysis", model="ProsusAI/finbert", truncation=True)
-
+    # Force PyTorch backend; avoids TensorFlow import path entirely. [web:66][web:71]
+    return pipeline(
+        "sentiment-analysis",
+        model="ProsusAI/finbert",
+        truncation=True,
+        framework="pt",
+    )
 
 @st.cache_data(ttl=60 * 60, show_spinner="Fetching news from GDELT...")
 def fetch_gdelt_articles(
