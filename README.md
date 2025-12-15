@@ -248,7 +248,3 @@ In the browser:
   * Avoid future-only or extremely short date ranges.
 
 ---
-
-## License
-
-Specify a license (e.g., MIT, Apache 2.0) and include a corresponding `LICENSE` file in the repository.
