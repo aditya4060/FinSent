@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import math
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
@@ -29,7 +30,7 @@ def _to_utc_date_str(x) -> str:
 
 @st.cache_resource(show_spinner="Loading FinBERT model...")
 def get_finbert_pipeline():
-    # FinBERT commonly used: ProsusAI/finbert [web:7][web:13]
+    # FinBERT commonly used: ProsusAI/finbert. [web:16][web:34]
     return pipeline("sentiment-analysis", model="ProsusAI/finbert", truncation=True)
 
 
@@ -43,6 +44,7 @@ def fetch_gdelt_articles(
     """
     Fetch news articles from GDELT DOC API for a ticker in date range.
     Returns DataFrame with: date, title, url, sourceCountry (if present).
+    Handles non-JSON / error responses gracefully.
     """
     start_date = _to_utc_date_str(start_date)
     end_date = _to_utc_date_str(end_date)
@@ -51,8 +53,6 @@ def fetch_gdelt_articles(
     start_dt = f"{start_date} 00:00:00"
     end_dt = (pd.to_datetime(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
 
-    # Query strategy: keep simple and robust.
-    # You can refine to include company name mapping; ticker-only is often noisy but usable.
     query = f'"{ticker}"'
 
     params = {
@@ -66,14 +66,32 @@ def fetch_gdelt_articles(
     }
 
     headers = {"User-Agent": USER_AGENT}
-    r = requests.get(GDELT_DOC_BASE, params=params, headers=headers, timeout=30)
-    r.raise_for_status()
-    data = r.json()
+
+    try:
+        r = requests.get(GDELT_DOC_BASE, params=params, headers=headers, timeout=30)
+    except requests.RequestException as e:
+        # Network-level error: log and return empty.
+        print("GDELT request error:", e)
+        return pd.DataFrame(columns=["date", "title", "url", "sourceCountry"])
+
+    # Raise HTTP error if not 2xx
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        # Log and return empty df instead of killing the app.
+        print("GDELT HTTP error:", e, "body snippet:", r.text[:500])
+        return pd.DataFrame(columns=["date", "title", "url", "sourceCountry"])
+
+    # Try to parse JSON safely; GDELT sometimes returns HTML/error pages.
+    try:
+        data = r.json()
+    except (requests.exceptions.JSONDecodeError, json.JSONDecodeError, ValueError) as e:
+        print("GDELT JSON decode error:", e, "body snippet:", r.text[:500])
+        return pd.DataFrame(columns=["date", "title", "url", "sourceCountry"])
 
     articles = data.get("articles", [])
     rows = []
     for a in articles:
-        # fields vary; guard with get()
         url = a.get("url")
         title = a.get("title")
         seendate = a.get("seendate") or a.get("datetime") or a.get("date")
@@ -114,12 +132,11 @@ def score_articles_finbert(articles_df: pd.DataFrame) -> pd.DataFrame:
     Add FinBERT sentiment label/score columns to the articles dataframe.
     """
     if articles_df is None or articles_df.empty:
-        return pd.DataFrame(columns=["date", "title", "url", "label", "confidence", "sentiment_score"])
+        return pd.DataFrame(columns=["date", "title", "url", "sourceCountry", "label", "confidence", "sentiment_score"])
 
     sa = get_finbert_pipeline()
 
     titles = articles_df["title"].astype(str).tolist()
-    # Batch inference; pipeline supports list input.
     preds = sa(titles)
 
     out = articles_df.copy()
