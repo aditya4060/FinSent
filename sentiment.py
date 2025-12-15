@@ -1,13 +1,9 @@
 # sentiment.py
 from __future__ import annotations
 
-import os
-import re
-import math
 import json
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any, List
+from datetime import datetime
+from typing import Dict
 
 import pandas as pd
 import requests
@@ -17,6 +13,28 @@ from transformers import pipeline
 
 GDELT_DOC_BASE = "https://api.gdeltproject.org/api/v2/doc/doc"
 USER_AGENT = "streamlit-sentiment-lstm-app/1.0"
+
+# Map tickers to company-name search queries for GDELT
+TICKER_TO_QUERY: Dict[str, str] = {
+    "TSLA": '"Tesla Inc"',
+    "AAPL": '"Apple Inc"',
+    "MSFT": '"Microsoft Corp"',
+    "GOOGL": '"Alphabet Inc"',
+    "AMZN": '"Amazon.com Inc"',
+    "META": '"Meta Platforms Inc"',
+    "NVDA": '"NVIDIA Corp"',
+    "JPM": '"JPMorgan Chase"',
+    "BAC": '"Bank of America"',
+    "^GSPC": '"S&P 500" OR "Standard & Poor\'s 500"',
+}
+
+
+def _gdelt_query_for_ticker(ticker: str) -> str:
+    # Prefer mapped company-name query; fall back to ticker phrase.
+    q = TICKER_TO_QUERY.get(ticker)
+    if q is not None:
+        return q
+    return f'"{ticker}" OR "{ticker} stock"'
 
 
 def _to_utc_date_str(x) -> str:
@@ -28,19 +46,16 @@ def _to_utc_date_str(x) -> str:
     return pd.to_datetime(x).date().isoformat()
 
 
-# @st.cache_resource(show_spinner="Loading FinBERT model...")
-# def get_finbert_pipeline():
-#     # FinBERT commonly used: ProsusAI/finbert. [web:16][web:34]
-#     return pipeline("sentiment-analysis", model="ProsusAI/finbert", truncation=True)
 @st.cache_resource(show_spinner="Loading FinBERT model...")
 def get_finbert_pipeline():
-    # Force PyTorch backend; avoids TensorFlow import path entirely. [web:66][web:71]
+    # Force PyTorch backend so transformers doesn't try to import TF. [web:66][web:71]
     return pipeline(
         "sentiment-analysis",
         model="ProsusAI/finbert",
         truncation=True,
         framework="pt",
     )
+
 
 @st.cache_data(ttl=60 * 60, show_spinner="Fetching news from GDELT...")
 def fetch_gdelt_articles(
@@ -52,16 +67,16 @@ def fetch_gdelt_articles(
     """
     Fetch news articles from GDELT DOC API for a ticker in date range.
     Returns DataFrame with: date, title, url, sourceCountry (if present).
-    Handles non-JSON / error responses gracefully.
+    Handles HTTP / JSON errors gracefully and returns empty dataframe on failure.
     """
     start_date = _to_utc_date_str(start_date)
     end_date = _to_utc_date_str(end_date)
 
-    # GDELT DOC uses datetime range; use inclusive date range by widening end to +1 day.
+    # Inclusive range by extending end to next day 00:00.
     start_dt = f"{start_date} 00:00:00"
     end_dt = (pd.to_datetime(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
 
-    query = f'"{ticker}"'
+    query = _gdelt_query_for_ticker(ticker)
 
     params = {
         "query": query,
@@ -78,19 +93,15 @@ def fetch_gdelt_articles(
     try:
         r = requests.get(GDELT_DOC_BASE, params=params, headers=headers, timeout=30)
     except requests.RequestException as e:
-        # Network-level error: log and return empty.
         print("GDELT request error:", e)
         return pd.DataFrame(columns=["date", "title", "url", "sourceCountry"])
 
-    # Raise HTTP error if not 2xx
     try:
         r.raise_for_status()
     except requests.HTTPError as e:
-        # Log and return empty df instead of killing the app.
         print("GDELT HTTP error:", e, "body snippet:", r.text[:500])
         return pd.DataFrame(columns=["date", "title", "url", "sourceCountry"])
 
-    # Try to parse JSON safely; GDELT sometimes returns HTML/error pages.
     try:
         data = r.json()
     except (requests.exceptions.JSONDecodeError, json.JSONDecodeError, ValueError) as e:
@@ -140,7 +151,9 @@ def score_articles_finbert(articles_df: pd.DataFrame) -> pd.DataFrame:
     Add FinBERT sentiment label/score columns to the articles dataframe.
     """
     if articles_df is None or articles_df.empty:
-        return pd.DataFrame(columns=["date", "title", "url", "sourceCountry", "label", "confidence", "sentiment_score"])
+        return pd.DataFrame(
+            columns=["date", "title", "url", "sourceCountry", "label", "confidence", "sentiment_score"]
+        )
 
     sa = get_finbert_pipeline()
 
