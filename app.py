@@ -147,7 +147,10 @@ st.header("Sentiment outputs")
 if st.session_state["sentiment_daily"] is not None:
     daily = st.session_state["sentiment_daily"]
     st.write("Daily sentiment (mean score) and article count:")
-    st.dataframe(daily.tail(20), use_container_width=True)
+    tail_daily = daily.tail(20).reset_index(drop=True)
+    tail_daily.index = tail_daily.index + 1
+    st.dataframe(tail_daily, use_container_width=True)
+    # st.dataframe(daily.tail(20), use_container_width=True)
 
 if st.session_state["sentiment_articles"] is not None:
     art = st.session_state["sentiment_articles"]
